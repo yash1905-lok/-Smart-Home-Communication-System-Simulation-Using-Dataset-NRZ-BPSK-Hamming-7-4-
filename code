@@ -1,0 +1,135 @@
+# ==========================================
+# Smart Home Communication System Simulation
+# Using Dataset + NRZ + BPSK + Hamming(7,4)
+# ==========================================
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# -------------------------------
+# Hamming(7,4) Encoder / Decoder
+# -------------------------------
+G = np.array([[1,0,0,0,1,1,0],
+              [0,1,0,0,1,0,1],
+              [0,0,1,0,0,1,1],
+              [0,0,0,1,1,1,1]])
+
+H = np.array([[1,1,0,1,1,0,0],
+              [1,0,1,1,0,1,0],
+              [0,1,1,1,0,0,1]])
+
+def hamming74_encode(bits):
+    b = np.array(bits).reshape(-1,4)
+    return (b @ G % 2).reshape(-1)
+
+def hamming74_decode(cbits):
+    cbits = cbits.reshape(-1,7)
+    synd = (cbits @ H.T) % 2
+    synd_val = synd[:,0]*4 + synd[:,1]*2 + synd[:,2]
+    for i,s in enumerate(synd_val):
+        if s != 0:
+            cbits[i,s-1] ^= 1
+    return cbits[:,[2,4,5,6]].reshape(-1)
+
+# -------------------------------
+# NRZ + BPSK
+# -------------------------------
+def nrz_encode(bits):
+    return np.where(bits==1, 1.0, 0.0)
+
+def bpsk_mod(bits, N=100, fc=2):
+    nrz = np.repeat(bits, N)
+    t = np.linspace(0, len(bits), len(bits)*N)
+    bpsk = np.sin(2*np.pi*fc*t + np.pi*(1-nrz))
+    return t, nrz, bpsk
+
+def bpsk_demod(sig, N=100):
+    samples = sig.reshape(-1, N).mean(axis=1)
+    return (samples > 0).astype(int)
+
+def awgn(sig, noise_level):
+    noise = noise_level * np.random.randn(len(sig))
+    return sig + noise
+
+# -------------------------------
+# Simulation per message
+# -------------------------------
+def simulate_message(bits_str, label, use_ecc=True, noise_level=0.3, plot=False):
+    # Pad the bits_str with leading zeros to make its length a multiple of 4
+    padding_needed = (4 - len(bits_str) % 4) % 4
+    padded_bits_str = '0' * padding_needed + bits_str
+
+    bits = np.array([int(b) for b in padded_bits_str])
+    enc_bits = hamming74_encode(bits) if use_ecc else bits
+    t, nrz_wave, tx_sig = bpsk_mod(nrz_encode(enc_bits))
+    rx_sig = awgn(tx_sig, noise_level)
+    rx_bits = bpsk_demod(rx_sig)
+    dec_bits = hamming74_decode(rx_bits) if use_ecc else rx_bits
+
+    # Compute bit error rate (BER)
+    src_bits = np.array([int(b) for b in bits_str])
+    errors = np.sum(src_bits != dec_bits[:len(src_bits)])
+    ber = errors / len(src_bits)
+
+
+    if plot:
+        fig, axs = plt.subplots(3,1, figsize=(10,6))
+        axs[0].step(t, nrz_wave, where='mid')
+        axs[0].set_title("(a) NRZ Signal")
+        axs[1].plot(t, tx_sig)
+        axs[1].set_title("(b) BPSK Modulated Signal")
+        axs[2].plot(t, rx_sig)
+        axs[2].set_title(f"(c) Received (Noise={noise_level})")
+        for ax in axs:
+            ax.grid(True)
+            ax.set_xlabel("Time")
+            ax.set_ylabel("Amplitude")
+        plt.tight_layout()
+        plt.show()
+
+    return {
+        "Label": label,
+        "Input Bits": bits_str,
+        "ECC Used": use_ecc,
+        "Noise": noise_level,
+        "Decoded Bits": ''.join(map(str, dec_bits[:len(src_bits)])),
+        "Errors": errors,
+        "BER": ber
+    }
+
+# -------------------------------
+# Load Dataset
+# -------------------------------
+# Example CSV file:
+# ID,bits,label
+# 1,1011,Temp sensor
+# 2,1100,Door sensor
+# 3,0101,Light control
+
+from io import StringIO
+data_csv = """ID,bits,label
+1,1011,Temp sensor
+2,1100,Door sensor
+3,0101,Light control
+"""
+df = pd.read_csv(StringIO(data_csv))
+
+# Convert the 'bits' column to string type
+df['bits'] = df['bits'].astype(str)
+
+
+# -------------------------------
+# Run Simulations for All
+# -------------------------------
+results = []
+for _, row in df.iterrows():
+    result = simulate_message(row['bits'], row['label'], use_ecc=True, noise_level=0.4, plot=True)
+    results.append(result)
+
+results_df = pd.DataFrame(results)
+print("\n=== Simulation Summary ===")
+print(results_df)
+
+# Save results to CSV (optional)
+results_df.to_csv("simulation_results.csv", index=False)
